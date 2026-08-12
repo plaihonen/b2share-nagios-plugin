@@ -1,5 +1,5 @@
 Name:		argo-probe-eudat-b2share
-Version:	2.2
+Version:	2.3
 Release:	1%{?dist}
 Summary:	Monitoring scripts that check the functionalities of B2SHAR (v2 + v3/RDM)
 License:	GPLv3+
@@ -44,6 +44,10 @@ install -m 755 check_b2share.py %{buildroot}/%{_libexecdir}/argo/probes/eudat-b2
 %attr(0755,root,root) /%{_libexecdir}/argo/probes/eudat-b2share/check_b2share.py
 
 %changelog
+
+* Wed Aug 12 2026 Petri Laihonen <petri.laihonen@csc.fi> - 2.3-1
+- Skip access-restricted and file-less records when selecting a record to probe
+- Filter search to open records server-side (access_status=open) as defense-in-depth
 
 * Fri Feb 11 2026 Petri Laihonen <petri.laihonen@csc.fi> - 2.2-1
 - Remove --strict-metadata option

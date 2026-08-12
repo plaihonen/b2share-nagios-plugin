@@ -88,7 +88,7 @@ B2SHARE URL: https://b2share.eudat.eu:443
 Starting B2SHARE Probe...
 ---------------------------
 Making a search.
-Making a HTTP GET request to https://b2share.eudat.eu:443/api/records?sort=newest&size=10
+Making a HTTP GET request to https://b2share.eudat.eu:443/api/records?access_status=open&sort=newest&size=10
 hits: 11718
 A record with files was found.
 Making a HTTP GET request to https://b2share.eudat.eu/api/records/h4rf8-38964

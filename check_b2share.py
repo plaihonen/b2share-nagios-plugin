@@ -156,12 +156,70 @@ def get_json(sess, url, verify, timeout_s, verbosity):
 
 # ---------------- Version resolution ----------------
 
-def finalize_version(bucket_json: dict) -> str:
+def finalize_version(bucket_json: dict, rec: dict) -> str:
+    """Decide v2 vs v3 from the bucket response shape.
+
+    A record with zero files gets an RDM bucket response that omits
+    `entries` entirely (rather than returning it as an empty list), so
+    bucket shape alone is ambiguous for empty buckets. Rather than
+    guessing v2 in that case, fall back to a version-stable signal on
+    the record itself: `access`/`parent` are RDM-only fields, present
+    on every v3 record regardless of file count and absent on v2.
+    Uses the same shape-sniffing idiom as hit_has_open_files() below —
+    keep both in sync if the API's version-distinguishing fields change.
+    """
     if "entries" in bucket_json:
         return "v3"
     if "contents" in bucket_json:
         return "v2"
+    if "access" in rec or "parent" in rec:
+        return "v3"
     return "v2"
+
+
+# ---------------- Search-hit selection check ----------------
+
+def hit_has_open_files(hit: dict) -> bool:
+    """True if a search hit has at least one file and those files are not
+    access-restricted.
+
+    Version isn't known yet at search time, so this inspects whichever
+    shape is present. Two independent signals matter here:
+
+    - File presence: v3/RDM hits always carry a `files` summary object
+      (`{"enabled": bool, "count": int, ...}`), even for records with
+      zero files, so a bare truthiness check on `hit["files"]` is a
+      non-empty dict and thus always true regardless of whether the
+      record has files — `enabled`/`count` on that summary is the real
+      signal. v2 hits instead put the literal file list under `files`.
+    - Access restriction: v3 hits carry an `access` object with
+      `files`/`status` fields; v2 hits have no `access` object and
+      instead flag restriction via `metadata.open_access`.
+
+    Uses the same shape-sniffing idiom as finalize_version() above —
+    keep both in sync if the API's version-distinguishing fields change.
+    """
+    files = hit.get("files")
+    if isinstance(files, dict):
+        if not files.get("enabled") or not files.get("count"):
+            return False
+    elif isinstance(files, list):
+        if not files:
+            return False
+    else:
+        return False
+
+    access = hit.get("access")
+    if isinstance(access, dict):
+        if access.get("files") == "restricted" or access.get("status") == "restricted":
+            return False
+        return True
+
+    metadata = hit.get("metadata")
+    open_access = metadata.get("open_access") if isinstance(metadata, dict) else None
+    if open_access is False:
+        return False
+    return True
 
 
 # ---------------- Main ----------------
@@ -228,13 +286,17 @@ def main():
     try:
         sess = requests.Session()
         sess.trust_env = bool(p.use_proxy)
-        sess.headers.update({"User-Agent": "b2share-unified-nagios/2.1 (+nagios)"})
+        sess.headers.update({"User-Agent": "b2share-unified-nagios/2.3 (+nagios)"})
 
         # ---------------- Search ----------------
         if verbosity > Verbosity.SINGLE:
             print("Making a search.", file=sys.stderr)
 
-        search_url = f"{base_url}/api/records?sort=newest&size=10"
+        # access_status=open is a v3/RDM-only facet filter (excludes
+        # restricted, embargoed, and file-less "metadata-only" records at
+        # the source); v2 instances silently ignore the unknown param and
+        # return unfiltered results, so it's safe to always send it.
+        search_url = f"{base_url}/api/records?access_status=open&sort=newest&size=10"
         search = get_json(sess, search_url, p.verify_tls_cert,
                           max(0.5, deadline - time.monotonic()), verbosity)
 
@@ -254,10 +316,10 @@ def main():
 
         hits = search["hits"]["hits"]
 
-        # Prefer record with files
+        # Prefer record with files that are not access-restricted
         rec_with_files_url = None
         for h in hits:
-            if h.get("files"):
+            if hit_has_open_files(h):
                 rec_with_files_url = h["links"]["self"]
                 break
 
@@ -268,7 +330,7 @@ def main():
         else:
             record_url = hits[0]["links"]["self"]
             if verbosity > Verbosity.SINGLE:
-                print("No records with files found; using first record.", file=sys.stderr)
+                print("No open, file-bearing records found; using first record.", file=sys.stderr)
 
         # ---------------- Fetch record ----------------
         rec = get_json(sess, record_url, p.verify_tls_cert,
@@ -295,7 +357,7 @@ def main():
                           max(0.5, deadline - time.monotonic()), verbosity)
 
         # Version detection must follow the bucket fetch
-        version = finalize_version(bucket)
+        version = finalize_version(bucket, rec)
 
         if version != "v3" and p.metadata_report and verbosity > Verbosity.SINGLE:
             print("METADATA-REPORT: Not applicable to v2.", file=sys.stderr)
@@ -379,7 +441,7 @@ def main():
         print(f"CRITICAL: {repr(e)}")
         sys.exit(2)
 
-    except (ValueError, KeyError, RequestException) as e:
+    except (ValueError, KeyError, IndexError, RequestException) as e:
         print(f"CRITICAL: {repr(e)}")
         sys.exit(2)
 
